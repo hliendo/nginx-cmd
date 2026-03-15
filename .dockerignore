@@ -1,0 +1,34 @@
+# Protecciones anti-filtración de datos privados en imágenes publicadas
+# ======================================================================
+# Nunca queremos subir secretos o configuraciones de entornos específicos
+# dentro del contendor paseado por Docker Hub.
+
+# 1. Certificados SSL Locales o de Producción (Secretos)
+datacfg/letsencrypt/
+
+# 2. Dominios específicos del desarrollador o del servidor (Local State)
+datacfg/nginx/conf/conf.d/domains/*.conf
+
+# 3. Datos web o HTML estáticos alojados por los nodos clientes
+datacfg/nginx/site/*
+
+# 4. Datos de Baneos y Seguridad Activa
+datacfg/fail2ban/data/db/
+
+# 5. Git y Basura
+.git/
+.gitignore
+*.swp
+*.tmp
+*~
+*.log
+*.sqlite3
+*.pem
+*.key
+prod_data/
+_reference/
+_references/
+_old/
+
+# Aclaración: SÍ permitimos datacfg/nginx/conf/conf.d/domains/includes/*.conf
+# porque esos son los templates estáticos del motor, NO son dominios privados.

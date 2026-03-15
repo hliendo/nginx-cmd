@@ -1,0 +1,55 @@
+[nginx-http-auth]
+enabled = true
+port = http,https
+logpath = /var/log/nginx/error.log
+maxretry = 3
+findtime = 600
+bantime = 3600
+chain = DOCKER-USER
+
+[nginx-botsearch]
+enabled = true
+port = http,https
+logpath = /var/log/nginx/access.log
+maxretry = 2
+findtime = 600
+bantime = 86400
+chain = DOCKER-USER
+
+[nginx-limit-req]
+enabled = true
+port = http,https
+logpath = /var/log/nginx/error.log
+maxretry = 5
+findtime = 600
+bantime = 3600
+chain = DOCKER-USER
+
+[nginx-forbidden]
+enabled = true
+port = http,https
+logpath = /var/log/nginx/error.log
+maxretry = 5
+findtime = 600
+bantime = 3600
+chain = DOCKER-USER
+
+[nginx-404]
+enabled = true
+port = http,https
+filter = nginx-404
+logpath = /var/log/nginx/access.log
+maxretry = 10
+findtime = 60
+bantime = 86400
+chain = DOCKER-USER
+
+# [recidive]
+# enabled = true
+# logpath = /var/log/fail2ban.log
+# filter = recidive
+# maxretry = 3
+# findtime = 86400
+# bantime = 604800
+# chain = DOCKER-USER
+

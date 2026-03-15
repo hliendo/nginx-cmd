@@ -1,0 +1,81 @@
+services:
+  nginx:
+    build:
+      context: . # Aquí va tu Dockerfile con nginx
+      dockerfile: Dockerfile
+    container_name: nginx
+    restart: always
+    #    sysctls:
+    #      - net.core.rmem_max=8388608
+    #      - net.core.wmem_max=8388608
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+      - 9.9.9.9
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - TZ=${TIMEZONE}
+      - NGINX_CMD_CERT_EMAIL=${NGINX_CMD_CERT_EMAIL}
+      - NGINX_CMD_NGINX_PATH=${NGINX_CMD_NGINX_PATH}
+      - NGINX_CMD_CERTS_PATH=${NGINX_CMD_CERTS_PATH}
+      - NGINX_CMD_SITE_PATH=${NGINX_CMD_SITE_PATH}
+      - NGINX_CMD_TRUST_PATH=${NGINX_CMD_TRUST_PATH}
+      - NGINX_CMD_PKI_ROOT_CN=${NGINX_CMD_PKI_ROOT_CN}
+      - NGINX_CMD_PKI_INTER_CN=${NGINX_CMD_PKI_INTER_CN}
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ${DOCKER_DATA}/nginx/conf:/opt/nginx/conf
+      - ${DOCKER_DATA}/nginx/log:/var/log/nginx
+      - ${DOCKER_DATA}/nginx/site:/opt/site
+      - ${DOCKER_DATA}/letsencrypt:/etc/letsencrypt
+      - ${DOCKER_DATA}/nginx/crontabs:/etc/crontabs
+    networks:
+      - caddy
+
+  certbot:
+    image: certbot/certbot:latest
+    container_name: certbot
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+      - 9.9.9.9
+    volumes:
+      - ${DOCKER_DATA}/letsencrypt:/etc/letsencrypt
+      - ${DOCKER_DATA}/nginx/site:/opt/site
+    networks:
+      - caddy
+    #    entrypoint: /bin/sh
+    # El comando real para obtener/renovar certificados se ejecuta manualmente o con cron
+
+  fail2ban:
+    image: crazymax/fail2ban:latest
+    container_name: fail2ban
+    restart: always
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+      - 9.9.9.9
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    environment:
+      - TZ=${TIMEZONE}
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - "${DOCKER_DATA}/fail2ban/data:/data"
+      - "/var/log/auth.log:/var/log/auth.log:ro"
+      - "${DOCKER_DATA}/nginx/log:/var/log/nginx:ro"
+    networks:
+      - caddy
+    logging:
+      # Sección de configuración de logging
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  caddy:
+    external: true
