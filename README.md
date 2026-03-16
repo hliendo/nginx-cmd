@@ -1,3 +1,22 @@
+# nginx-cmd
+
+Herramienta para administrar múltiples sitios en nginx de forma simple y rápida.
+
+## Contexto
+Pensada para administradores que manejan varios virtual hosts y necesitan automatizar tareas repetitivas sin escribir manualmente cada bloque de configuración.
+
+## Qué resuelve
+- Alta y baja de sitios en segundos.
+- Generación automática de certificados SSL con Let's Encrypt.
+- Integración con `nginx-proxy` y Docker.
+- Simplificación de despliegues multi-site.
+
+## Uso básico
+```bash
+nginx-cmd add sitio.com
+nginx-cmd remove sitio.com
+nginx-cmd list
+```
 # Nginx Command Tool (nginx-cmd)
 
 Este proyecto no busca reemplazar la genialidad de Caddy ni la comodidad de Nginx Proxy Manager. Ambos son logros enormes de la comunidad. nginx-cmd se plantea como una alternativa minimalista para quienes necesitan control absoluto sobre Nginx, modularidad mediante includes y un ciclo de vida limpio sin deuda técnica.
