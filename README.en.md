@@ -1,3 +1,23 @@
+# nginx-cmd
+
+Tool to manage multiple sites in nginx quickly and easily.
+
+## Context
+Designed for administrators handling several virtual hosts who need to automate repetitive tasks without manually writing each configuration block.
+
+## What it solves
+- Add and remove sites in seconds.
+- Automatic SSL certificate generation with Let's Encrypt.
+- Integration with `nginx-proxy` and Docker.
+- Simplifies multi-site deployments.
+
+## Basic usage
+```bash
+nginx-cmd add site.com
+nginx-cmd remove site.com
+nginx-cmd list
+```
+
 # Nginx Command Tool (nginx-cmd)
 This project does not aim to replace the brilliance of **Caddy** or the convenience of **Nginx Proxy Manager**. Both are remarkable achievements of the open source community, and their creators put tremendous effort into building them.
 
