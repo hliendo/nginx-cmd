@@ -86,7 +86,7 @@ server {
         include {{.NginxPath}}/conf/conf.d/domains/includes/proxy-defaults.conf;
         include {{.NginxPath}}/conf/conf.d/domains/includes/proxy-fault-tolerance.conf;
         {{ if .WS }}include {{.NginxPath}}/conf/conf.d/domains/includes/proxy-websocket.conf;{{ end }}
-        {{ if .Stream }}include {{.NginxPath}}/conf/conf.d/domains/includes/proxy-stream.conf;{{ end }}
+        {{ if .Stream }}include {{.NginxPath}}/conf/conf.d/domains/includes/proxy-stream.conf;{{ else }}include {{.NginxPath}}/conf/conf.d/domains/includes/proxy-timeouts.conf;{{ end }}
         {{ end }}
     }
 }
