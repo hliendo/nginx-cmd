@@ -76,4 +76,31 @@ chmod +x nginx-cmd.sh
 ./nginx-cmd.sh add midominio.com proxy --target 10.0.0.5:8080
 ```
 
+### 3. Renovación automática de certificados (sin cron del sistema)
+
+El contenedor renueva sus certificados solo, con `nginx-cmd serve`: un loop
+interno del propio binario, ya arrancado por `entrypoint.sh`, que reemplaza
+la necesidad de un cron externo (`crond` + `/etc/crontabs`).
+
+**Por qué no usa cron del SO.** Un cron externo es una pieza que vive fuera
+del binario: si la ruta al ejecutable o al directorio de log quedan
+desincronizadas de lo que el `Dockerfile` realmente instala, el cron falla
+en silencio, todos los días, sin que se vea en ningún lado hasta que el
+certificado ya venció. `serve` elimina esa pieza por completo — es el mismo
+proceso que ya corre en el contenedor el que se duerme, se despierta y
+renueva, y deja un latido (`💓`) en los logs cada 30 minutos aunque no haya
+nada para renovar ese día:
+
+```bash
+# Chequeo manual, un solo ciclo (lo que ya hacía "renew")
+nginx-cmd renew
+
+# Daemon interno: corre para siempre, chequea cada 12h por defecto
+nginx-cmd serve
+nginx-cmd serve --interval 6h
+```
+
+En producción no hace falta invocarlo a mano: `entrypoint.sh` ya lo lanza en
+background antes de arrancar nginx en foreground.
+
 *Próximamente documentación detallada sobre auto-escalado TLS en [USAGE.md](USAGE.md).*

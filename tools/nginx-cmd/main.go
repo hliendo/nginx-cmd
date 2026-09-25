@@ -243,6 +243,119 @@ to trust internal certificates.`,
 var forceRenew bool
 var dryRun bool
 
+// runRenewCycle contiene la lógica real de renovación (antes vivía inline en
+// renewCmd.Run). Extraída para que tanto "renew" (un solo ciclo, manual)
+// como "serve" (loop interno, sin cron del SO) llamen al mismo código: cero
+// duplicación entre el comando manual y el daemon automático.
+func runRenewCycle(force bool, dry bool) {
+	domains, err := nginx.ListDomains()
+	if err != nil {
+		fmt.Printf("Error listing domains: %v\n", err)
+		return
+	}
+
+	ca := pki.NewPKI()
+	processedAny := false
+
+	for i := range domains {
+		d := &domains[i]
+		// Update status
+		status, expiry, _ := ca.CheckCertSource(d.Name)
+		d.SSLStatus = status
+		daysLeft := int(time.Until(expiry).Hours() / 24)
+
+		fmt.Printf("Processing %s (Status: %s, Expiry: %d days)...\n", d.Name, d.SSLStatus, daysLeft)
+
+		// BOOTSTRAP EMERGENCY: If no cert exists, issue an internal one so Nginx can at least START
+		if d.SSLStatus == "None" {
+			fmt.Printf("🚨 No certificate found for %s. Issuing internal Bootstrap certificate...\n", d.Name)
+			certDir := filepath.Join(config.GetCertsPath(), "live", d.Name)
+			if err := ca.IssueCert(d.Name, certDir); err != nil {
+				fmt.Printf("❌ Failed to issue bootstrap cert: %v\n", err)
+				continue
+			}
+			d.SSLStatus = "Bootstrap" // Update status for the next check
+			processedAny = true
+		}
+
+		if d.SSLStatus == "Bootstrap" || (d.SSLStatus == "Production" && force) {
+			// PRE-FLIGHT CHECK: Avoid Let's Encrypt ban if domain is not delegated
+			fmt.Printf("🔍 Running Pre-flight DNS check for %s...\n", d.Name)
+			ips, err := net.LookupIP(d.Name)
+			if err != nil || len(ips) == 0 {
+				fmt.Printf("⚠️ WARNING: DNS resolution failed for %s. Proceeding anyway (Certbot will decide).\n", d.Name)
+			} else {
+				fmt.Printf("📡 DNS OK: %s resolved to %v\n", d.Name, ips[0])
+			}
+
+			// 🛠️ LIMPIEZA INDUSTRIAL: Eliminar veneno de Bootstrap antes de Certbot
+			livePath := filepath.Join(config.GetCertsPath(), "live", d.Name)
+			if fi, err := os.Lstat(livePath); err == nil {
+				if fi.Mode().IsDir() {
+					fmt.Printf("🧹 Cleaning up Bootstrap directory in live/ to allow Certbot symlinks: %s\n", livePath)
+					os.RemoveAll(livePath)
+				}
+			}
+
+			// Reparar archivos de renovación corruptos (0 bytes)
+			renewalFile := filepath.Join(config.GetCertsPath(), "renewal", d.Name+".conf")
+			if fi, err := os.Stat(renewalFile); err == nil && fi.Size() == 0 {
+				fmt.Printf("🩹 Removing corrupt renewal file (0 bytes): %s\n", renewalFile)
+				os.Remove(renewalFile)
+			}
+
+			fmt.Printf("🚀 Attempting to obtain Let's Encrypt certificate for %s...\n", d.Name)
+			webroot := filepath.Join(config.GetSitePath(), d.Name)
+
+			// Ensure webroot exists
+			os.MkdirAll(webroot, 0755)
+
+			certbotArgs := []string{
+				"certonly", "--webroot", "-w", webroot,
+				"-d", d.Name,
+				"--email", config.GetCertEmail(),
+				"--agree-tos", "--no-eff-email", "--non-interactive",
+			}
+			if force {
+				certbotArgs = append(certbotArgs, "--force-renewal")
+			}
+			if dry {
+				fmt.Println("🔍 [DRY RUN] Simulating certbot request...")
+				certbotArgs = append(certbotArgs, "--dry-run")
+			}
+
+			cbCmd := exec.Command("certbot", certbotArgs...)
+			output, err := cbCmd.CombinedOutput()
+			if err != nil {
+				fmt.Printf("❌ Failed to obtain certificate for %s: %v\nOutput: %s\n", d.Name, err, string(output))
+			} else {
+				fmt.Printf("✅ Certificate obtained for %s!\n", d.Name)
+				processedAny = true
+			}
+		}
+	}
+
+	// Run generic renewal for existing production certs
+	fmt.Println("🔄 Running general certbot renew...")
+	renewArgs := []string{"renew", "--non-interactive"}
+	if force {
+		renewArgs = append(renewArgs, "--force-renewal")
+	}
+	if dry {
+		renewArgs = append(renewArgs, "--dry-run")
+	}
+	cbRenew := exec.Command("certbot", renewArgs...)
+	output, _ := cbRenew.CombinedOutput()
+	fmt.Println(string(output))
+
+	if processedAny || strings.Contains(string(output), "Congratulations") {
+		fmt.Println("Reloading Nginx...")
+		if err := nginx.Reload(); err != nil {
+			fmt.Printf("Error reloading nginx: %v\n", err)
+		}
+	}
+}
+
 var renewCmd = &cobra.Command{
 	Use:   "renew",
 	Short: "Renew SSL certificates intelligently",
@@ -250,113 +363,57 @@ var renewCmd = &cobra.Command{
 If a domain is in 'Bootstrap' status, it attempts to obtain a Let's Encrypt certificate.
 If a domain is in 'Production' status, it runs certbot renew.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		domains, err := nginx.ListDomains()
-		if err != nil {
-			fmt.Printf("Error listing domains: %v\n", err)
-			os.Exit(1)
-		}
-
-		ca := pki.NewPKI()
-		processedAny := false
-
-		for i := range domains {
-			d := &domains[i]
-			// Update status
-			status, expiry, _ := ca.CheckCertSource(d.Name)
-			d.SSLStatus = status
-			daysLeft := int(time.Until(expiry).Hours() / 24)
-
-			fmt.Printf("Processing %s (Status: %s, Expiry: %d days)...\n", d.Name, d.SSLStatus, daysLeft)
-
-			// BOOTSTRAP EMERGENCY: If no cert exists, issue an internal one so Nginx can at least START
-			if d.SSLStatus == "None" {
-				fmt.Printf("🚨 No certificate found for %s. Issuing internal Bootstrap certificate...\n", d.Name)
-				certDir := filepath.Join(config.GetCertsPath(), "live", d.Name)
-				if err := ca.IssueCert(d.Name, certDir); err != nil {
-					fmt.Printf("❌ Failed to issue bootstrap cert: %v\n", err)
-					continue
-				}
-				d.SSLStatus = "Bootstrap" // Update status for the next check
-				processedAny = true
-			}
-
-			if d.SSLStatus == "Bootstrap" || (d.SSLStatus == "Production" && forceRenew) {
-				// PRE-FLIGHT CHECK: Avoid Let's Encrypt ban if domain is not delegated
-				fmt.Printf("🔍 Running Pre-flight DNS check for %s...\n", d.Name)
-				ips, err := net.LookupIP(d.Name)
-				if err != nil || len(ips) == 0 {
-					fmt.Printf("⚠️ WARNING: DNS resolution failed for %s. Proceeding anyway (Certbot will decide).\n", d.Name)
-				} else {
-					fmt.Printf("📡 DNS OK: %s resolved to %v\n", d.Name, ips[0])
-				}
-
-				// 🛠️ LIMPIEZA INDUSTRIAL: Eliminar veneno de Bootstrap antes de Certbot
-				livePath := filepath.Join(config.GetCertsPath(), "live", d.Name)
-				if fi, err := os.Lstat(livePath); err == nil {
-					if fi.Mode().IsDir() {
-						fmt.Printf("🧹 Cleaning up Bootstrap directory in live/ to allow Certbot symlinks: %s\n", livePath)
-						os.RemoveAll(livePath)
-					}
-				}
-
-				// Reparar archivos de renovación corruptos (0 bytes)
-				renewalFile := filepath.Join(config.GetCertsPath(), "renewal", d.Name+".conf")
-				if fi, err := os.Stat(renewalFile); err == nil && fi.Size() == 0 {
-					fmt.Printf("🩹 Removing corrupt renewal file (0 bytes): %s\n", renewalFile)
-					os.Remove(renewalFile)
-				}
-				
-				fmt.Printf("🚀 Attempting to obtain Let's Encrypt certificate for %s...\n", d.Name)
-				webroot := filepath.Join(config.GetSitePath(), d.Name)
-
-				// Ensure webroot exists
-				os.MkdirAll(webroot, 0755)
-
-				certbotArgs := []string{
-					"certonly", "--webroot", "-w", webroot,
-					"-d", d.Name,
-					"--email", config.GetCertEmail(),
-					"--agree-tos", "--no-eff-email", "--non-interactive",
-				}
-				if forceRenew {
-					certbotArgs = append(certbotArgs, "--force-renewal")
-				}
-				if dryRun {
-					fmt.Println("🔍 [DRY RUN] Simulating certbot request...")
-					certbotArgs = append(certbotArgs, "--dry-run")
-				}
-
-				cbCmd := exec.Command("certbot", certbotArgs...)
-				output, err := cbCmd.CombinedOutput()
-				if err != nil {
-					fmt.Printf("❌ Failed to obtain certificate for %s: %v\nOutput: %s\n", d.Name, err, string(output))
-				} else {
-					fmt.Printf("✅ Certificate obtained for %s!\n", d.Name)
-					processedAny = true
-				}
-			}
-		}
-
-		// Run generic renewal for existing production certs
-		fmt.Println("🔄 Running general certbot renew...")
-		renewArgs := []string{"renew", "--non-interactive"}
-		if forceRenew {
-			renewArgs = append(renewArgs, "--force-renewal")
-		}
-		if dryRun {
-			renewArgs = append(renewArgs, "--dry-run")
-		}
-		cbRenew := exec.Command("certbot", renewArgs...)
-		output, _ := cbRenew.CombinedOutput()
-		fmt.Println(string(output))
-
-		if processedAny || strings.Contains(string(output), "Congratulations") {
-			fmt.Println("Reloading Nginx...")
-			if err := nginx.Reload(); err != nil {
-				fmt.Printf("Error reloading nginx: %v\n", err)
-			}
-		}
+		runRenewCycle(forceRenew, dryRun)
 	},
+}
+
+var serveInterval time.Duration
+
+var serveCmd = &cobra.Command{
+	Use:   "serve",
+	Short: "Run as an internal daemon: renew certificates on a schedule, no OS cron required",
+	Long: `Starts an internal loop that periodically runs the same renewal logic as
+"renew", without depending on an external cron/crontab.
+
+Por qué existe: depender de un cron del sistema operativo (crond +
+/etc/crontabs) es un punto de falla silencioso — si la ruta del binario o el
+directorio del log quedan desincronizados, el cron falla todos los días sin
+que nadie lo note hasta que el certificado ya venció. "serve" elimina esa
+pieza externa: es el propio proceso el que se duerme y se despierta solo, e
+imprime un latido periódico para que la salud del chequeo sea visible en
+"docker logs" incluso cuando no hay nada para renovar.
+
+Pensado para ser EL proceso que reemplaza a crond en el entrypoint del
+contenedor (ver entrypoint.sh).`,
+	Run: func(cmd *cobra.Command, args []string) {
+		runServeLoop(serveInterval)
+	},
+}
+
+// runServeLoop reemplaza al cron externo: mismo proceso, mismo binario que
+// ya corre en el contenedor. Chequea al arrancar, después cada "interval", y
+// emite un heartbeat cada 30 minutos para que un "docker logs" muestre vida
+// aunque no haya nada para renovar ese día.
+func runServeLoop(interval time.Duration) {
+	fmt.Printf("🚀 nginx-cmd serve: chequeo automático de certificados cada %v (sin cron externo)\n", interval)
+
+	// Primer chequeo inmediato al arrancar, no hace falta esperar el primer tick.
+	runRenewCycle(false, false)
+
+	renewTicker := time.NewTicker(interval)
+	defer renewTicker.Stop()
+	heartbeat := time.NewTicker(30 * time.Minute)
+	defer heartbeat.Stop()
+
+	for {
+		select {
+		case <-renewTicker.C:
+			fmt.Printf("[%s] 🔄 Ciclo de renovación programado\n", time.Now().Format(time.RFC3339))
+			runRenewCycle(false, false)
+		case <-heartbeat.C:
+			fmt.Printf("[%s] 💓 nginx-cmd serve sigue vivo. Próximo chequeo en <= %v\n", time.Now().Format(time.RFC3339), interval)
+		}
+	}
 }
 
 var bootstrapCmd = &cobra.Command{
@@ -390,6 +447,7 @@ func init() {
 	rootCmd.AddCommand(checkCmd)
 	rootCmd.AddCommand(renewCmd)
 	rootCmd.AddCommand(bootstrapCmd)
+	rootCmd.AddCommand(serveCmd)
 
 	addCmd.Flags().StringP("target", "p", "", "Target host:port for reverse proxy")
 	addCmd.Flags().Bool("ws", false, "Enable WebSocket support (Reverse Proxy only)")
@@ -397,6 +455,7 @@ func init() {
 	addCmd.Flags().Bool("stream", false, "Enable HTTP Streaming/SSE buffering-off (Reverse Proxy only)")
 	renewCmd.Flags().BoolVarP(&forceRenew, "force", "f", false, "Force renewal of all certificates")
 	renewCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Simulate certificate renewal")
+	serveCmd.Flags().DurationVar(&serveInterval, "interval", 12*time.Hour, "How often to check/renew certificates")
 }
 
 func main() {
